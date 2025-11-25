@@ -14,11 +14,12 @@ from sklearn.ensemble import RandomForestClassifier
 
 @st.cache_data
 def load_data():
-    file_path = "MSC_EV_Master_AI_FINAL.xlsx"  # فایل باید کنار app.py باشد
+    file_path = "MSC_EV_Master_AI_FINAL.xlsx"  # File must be in the same directory as app.py
     main_df = pd.read_excel(file_path, sheet_name="Main_Data")
     return main_df
 
 main_df = load_data()
+
 
 # =========================
 # 2. Define feature columns
@@ -56,13 +57,14 @@ feature_cols = [c for c in feature_cols if c in main_df.columns]
 
 def build_labels(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+
     # Therapy label
     if "Direction_num" in df.columns:
         df["Label_therapy"] = (df["Direction_num"] == 1).astype(int)
     else:
         df["Label_therapy"] = 1
 
-    # Pro-tumor / dormancy
+    # Pro-tumor / dormancy label
     if "ProTumor_num" in df.columns:
         df["Label_pro_dormant"] = (df["ProTumor_num"] > 0).astype(int)
     else:
@@ -77,8 +79,6 @@ main_df = build_labels(main_df)
 # 4. Train models
 # =========================
 
-from sklearn.compose import ColumnTransformer
-
 def get_prep_step_name(pipeline):
     for name, step in pipeline.named_steps.items():
         if isinstance(step, ColumnTransformer):
@@ -89,7 +89,7 @@ def get_prep_step_name(pipeline):
 def train_models(df: pd.DataFrame):
     df = df.dropna(subset=feature_cols).copy()
 
-    # Therapy
+    # Therapy model
     X_ther = df[feature_cols]
     y_ther = df["Label_therapy"].astype(int)
 
@@ -102,7 +102,7 @@ def train_models(df: pd.DataFrame):
     pipe_therapy = Pipeline([("prep", preprocess_t), ("model", model_therapy)])
     pipe_therapy.fit(X_ther, y_ther)
 
-    # Pro-tumor
+    # Pro-tumor model
     X_risk = df[feature_cols]
     y_risk = df["Label_pro_dormant"].astype(int)
 
@@ -130,6 +130,7 @@ def manufacturability_score(row):
     eng_type = str(row.get("Engineering_Type", "")).lower()
     misev = str(row.get("MISEV_Compliance_Level", "")).lower()
 
+    # Isolation method
     if any(k in iso_group for k in ["sec", "tff", "tff/aec", "uc"]):
         score += 0.5
     elif "kit" in iso_group:
@@ -137,11 +138,13 @@ def manufacturability_score(row):
     elif "secretome" in iso_group:
         score -= 0.1
 
+    # MISEV compliance
     if "full" in misev:
         score += 0.2
     elif "partial" in misev:
         score += 0.1
 
+    # Engineering complexity
     if eng_type in ["none", "natural"]:
         score += 0.2
     elif "surface" in eng_type:
@@ -169,6 +172,7 @@ def risk_label_color(p):
 def build_candidates(df: pd.DataFrame, n_samples=200, risk_threshold=0.02, random_state=321):
     rng = np.random.default_rng(random_state)
 
+    # Build design space
     design_space = {}
     for col in feature_cols:
         vals = df[col].dropna().value_counts().index[:5].tolist()
@@ -176,6 +180,7 @@ def build_candidates(df: pd.DataFrame, n_samples=200, risk_threshold=0.02, rando
             vals = [None]
         design_space[col] = vals
 
+    # Validity check
     def is_valid_protocol(row):
         src = str(row["MSC_Source"]).lower()
         grp = str(row["MSC_Source_Group"]).lower()
@@ -183,12 +188,17 @@ def build_candidates(df: pd.DataFrame, n_samples=200, risk_threshold=0.02, rando
         surf = str(row["Surface_Modification"]).lower()
         eng  = str(row["Engineering_Type"]).lower()
 
+        # Must be breast cancer cell line
         if not any(k in cl for k in ["mda-mb", "mcf", "4t1", "t47d", "skbr"]):
             return False
+
+        # Natural MSC-EVs cannot have engineered surface proteins
         if eng in ["none", "natural"] and ("lamp2b" in surf or "crgd" in surf):
             return False
+
         return True
 
+    # Sampling
     rows = []
     attempts = 0
     max_attempts = 5000
@@ -203,7 +213,7 @@ def build_candidates(df: pd.DataFrame, n_samples=200, risk_threshold=0.02, rando
 
     grid_df = pd.DataFrame(rows)
 
-    # Predict P_therapy
+    # Predict therapy probability
     prep_t = get_prep_step_name(pipe_therapy)
     Xg_t = grid_df[feature_cols]
     Xg_enc_t = pipe_therapy.named_steps[prep_t].transform(Xg_t)
@@ -211,7 +221,7 @@ def build_candidates(df: pd.DataFrame, n_samples=200, risk_threshold=0.02, rando
         Xg_enc_t = Xg_enc_t.toarray().astype(float)
     grid_df["P_therapy"] = pipe_therapy.named_steps["model"].predict_proba(Xg_enc_t)[:, 1]
 
-    # Predict P_pro_tumor
+    # Predict pro-tumor probability
     prep_r = get_prep_step_name(pipe_pro_risk)
     Xg_r = grid_df[feature_cols]
     Xg_enc_r = pipe_pro_risk.named_steps[prep_r].transform(Xg_r)
@@ -219,9 +229,10 @@ def build_candidates(df: pd.DataFrame, n_samples=200, risk_threshold=0.02, rando
         Xg_enc_r = Xg_enc_r.toarray().astype(float)
     grid_df["P_pro_tumor"] = pipe_pro_risk.named_steps["model"].predict_proba(Xg_enc_r)[:, 1]
 
-    # Manufacturability + Translation index
+    # Manufacturability + Translation Index
     manuf_scores = [manufacturability_score(r) for _, r in grid_df.iterrows()]
     grid_df["Manufacturability_score"] = manuf_scores
+
     alpha, beta, gamma = 1.0, 1.5, 1.0
     grid_df["Translation_index"] = (
         alpha * grid_df["P_therapy"]
@@ -243,18 +254,19 @@ candidates2 = build_candidates(main_df)
 st.title("MSC-EV AI Simulator for Breast Cancer")
 
 st.markdown("""
-Select four key design parameters and let the AI:
-1) Predict anti-tumor efficacy and dormancy/pro-tumor risk,  
-2) If your design is **not recommended**, suggest the closest **AI-optimized protocol**.
+Choose four design parameters and the AI will:
+1) Predict anti-tumor efficacy and dormancy/pro-tumor risk  
+2) If your protocol is **not recommended**, the AI suggests the closest **optimized design**
 """)
 
+# --- User inputs ---
 cell_line = st.selectbox(
     "Cell line",
     sorted(main_df["Cell_Line"].dropna().unique().tolist())
 )
 
 msc_source = st.selectbox(
-    "EV / MSC source",
+    "MSC / EV source",
     sorted(main_df["MSC_Source"].dropna().unique().tolist())
 )
 
@@ -270,7 +282,8 @@ dose_band = st.selectbox(
 
 run = st.button("Run AI simulation")
 
-# defaults برای بقیه‌ی فیچرها
+
+# Default values for all other features:
 default_values = {}
 for col in feature_cols:
     vals = main_df[col].dropna()
@@ -278,7 +291,10 @@ for col in feature_cols:
 
 
 if run:
-    # --- user design ---
+
+    # -----------------------------
+    # Build user protocol row
+    # -----------------------------
     row_user = {}
     for col in feature_cols:
         if col == "Cell_Line":
@@ -294,7 +310,9 @@ if run:
 
     df_user = pd.DataFrame([row_user])
 
-    # Predict
+    # -----------------------------
+    # Predict therapy probability
+    -----------------------------
     try:
         prep_t = get_prep_step_name(pipe_therapy)
         Xu_t = pipe_therapy.named_steps[prep_t].transform(df_user)
@@ -305,6 +323,9 @@ if run:
         st.error(f"Therapy model error: {e}")
         p_th_user = np.nan
 
+    # -----------------------------
+    # Predict pro-tumor probability
+    -----------------------------
     try:
         prep_r = get_prep_step_name(pipe_pro_risk)
         Xu_r = pipe_pro_risk.named_steps[prep_r].transform(df_user)
@@ -315,6 +336,9 @@ if run:
         st.error(f"Pro-tumor model error: {e}")
         p_pro_user = np.nan
 
+    # -----------------------------
+    # Compute manufacturability + Translation Index
+    # -----------------------------
     manuf_user = manufacturability_score(row_user)
     alpha, beta, gamma = 1.0, 1.5, 1.0
     TI_user = alpha * p_th_user - beta * p_pro_user + manuf_user
@@ -322,18 +346,24 @@ if run:
     risk_txt_user, risk_col_user = risk_label_color(p_pro_user)
     rec_user = (p_pro_user < 0.02) and (p_th_user > 0.85)
 
-    st.subheader("1) Your design – AI prediction")
+    # -----------------------------
+    # Display user protocol results
+    # -----------------------------
+    st.subheader("1) Your Design — AI Prediction")
+
     st.write(f"**Cell line:** {row_user['Cell_Line']}")
-    st.write(f"**EV source:** {row_user['MSC_Source']}")
+    st.write(f"**MSC/EV source:** {row_user['MSC_Source']}")
     st.write(f"**Isolation method:** {row_user['EV_Isolation_Method']}")
     st.write(f"**Dose band:** {row_user['Dose_Band']}")
 
     st.write(f"**P(anti-tumor):** `{p_th_user:.3f}`")
+
     st.markdown(
-        f"**P(pro-tumor/dormancy):** "
+        f"**P(pro-tumor / dormancy):** "
         f"<span style='color:{risk_col_user}; font-weight:bold'>{p_pro_user:.3f} ({risk_txt_user} risk)</span>",
         unsafe_allow_html=True
     )
+
     st.write(f"**Manufacturability score:** `{manuf_user:.2f}`")
     st.write(f"**Translation index:** `{TI_user:.3f}`")
 
@@ -342,26 +372,24 @@ if run:
     else:
         st.markdown("**AI Recommendation:** ❌ **NOT recommended**", unsafe_allow_html=True)
 
-        # ---- AI suggestion ----
-        st.subheader("2) AI-suggested protocol based on your choices")
+        # ==============================
+        # AI-Suggested Protocol
+        # ==============================
+        st.subheader("2) AI-Suggested Best Protocol Closest to Your Design")
 
         subset = candidates2.copy()
 
         sub1 = subset[subset["Cell_Line"] == cell_line]
-        if not sub1.empty:
-            subset = sub1
+        if not sub1.empty: subset = sub1
 
         sub2 = subset[subset["MSC_Source"] == msc_source]
-        if not sub2.empty:
-            subset = sub2
+        if not sub2.empty: subset = sub2
 
         sub3 = subset[subset["EV_Isolation_Method"] == iso_method]
-        if not sub3.empty:
-            subset = sub3
+        if not sub3.empty: subset = sub3
 
         sub4 = subset[subset["Dose_Band"] == dose_band]
-        if not sub4.empty:
-            subset = sub4
+        if not sub4.empty: subset = sub4
 
         if subset.empty:
             subset = candidates2.copy()
@@ -371,6 +399,7 @@ if run:
 
         df_ai = pd.DataFrame([row_ai[feature_cols]])
 
+        # Predict for AI protocol
         try:
             prep_t2 = get_prep_step_name(pipe_therapy)
             Xa_t = pipe_therapy.named_steps[prep_t2].transform(df_ai)
@@ -395,16 +424,18 @@ if run:
         rec_ai = (p_pro_ai < 0.02) and (p_th_ai > 0.85)
 
         st.write(f"**Cell line:** {row_ai['Cell_Line']}")
-        st.write(f"**EV source:** {row_ai['MSC_Source']}")
+        st.write(f"**MSC/EV source:** {row_ai['MSC_Source']}")
         st.write(f"**Isolation method:** {row_ai['EV_Isolation_Method']}")
         st.write(f"**Dose band:** {row_ai['Dose_Band']}")
 
         st.write(f"**P(anti-tumor):** `{p_th_ai:.3f}`")
+
         st.markdown(
-            f"**P(pro-tumor/dormancy):** "
+            f"**P(pro-tumor / dormancy):** "
             f"<span style='color:{risk_col_ai}; font-weight:bold'>{p_pro_ai:.3f} ({risk_txt_ai} risk)</span>",
             unsafe_allow_html=True
         )
+
         st.write(f"**Manufacturability score:** `{manuf_ai:.2f}`")
         st.write(f"**Translation index:** `{TI_ai:.3f}`")
 
