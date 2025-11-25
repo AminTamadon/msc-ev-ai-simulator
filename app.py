@@ -10,7 +10,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 
 # =========================================
-# 0. Page config
+# Page config
 # =========================================
 st.set_page_config(
     page_title="MSC-EV AI Simulator for Breast Cancer",
@@ -19,7 +19,7 @@ st.set_page_config(
 
 
 # =========================================
-# 1. Define feature columns (global)
+# Feature columns (global template)
 # =========================================
 
 FEATURE_COLS = [
@@ -33,7 +33,7 @@ FEATURE_COLS = [
     "Isolation_Group",
     "EV_Loading_Type",
     "Cargo_Family",
-    "EV_Loading_Target",
+    "EV_LoadING_Target",
     "Surface_Modification",
     "Engineering_Type",
     "Outcome_Type",
@@ -47,7 +47,7 @@ FEATURE_COLS = [
 
 
 # =========================================
-# 2. Load data
+# Data loading helpers
 # =========================================
 
 @st.cache_data
@@ -95,6 +95,10 @@ def get_main_dataframe() -> pd.DataFrame:
     return df
 
 
+# =========================================
+# Load main data
+# =========================================
+
 main_df = get_main_dataframe()
 
 if main_df is None or main_df.empty:
@@ -109,7 +113,7 @@ if len(feature_cols) == 0:
 
 
 # =========================================
-# 3. Build labels
+# Label construction
 # =========================================
 
 def build_labels(df: pd.DataFrame) -> pd.DataFrame:
@@ -134,7 +138,7 @@ main_df = build_labels(main_df)
 
 
 # =========================================
-# 4. Train models
+# Model training helpers
 # =========================================
 
 def get_prep_step_name(pipeline: Pipeline) -> str:
@@ -152,20 +156,12 @@ def train_models(df: pd.DataFrame, feature_cols: list):
     - Therapy model (Label_therapy)
     - Pro-tumor / dormancy model (Label_pro_dormant)
     """
-    # Drop rows with missing values in feature columns
-    df = df.dropna(subset=feature_cols).copy()
+    df = df.copy()
 
-    if df.empty:
-        st.error(
-            "No rows remain after dropping missing values in the feature columns.\n\n"
-            "Please check the data and NaNs in:\n"
-            f"{feature_cols}"
-        )
-        return None, None
-
-    # Coerce feature columns to string to avoid encoding issues
+    # Fill NaNs with a placeholder and convert to string for categorical encoding
     for col in feature_cols:
-        df[col] = df[col].astype(str)
+        if col in df.columns:
+            df[col] = df[col].fillna("Missing").astype(str)
 
     # =========================
     # Therapy model
@@ -227,12 +223,15 @@ def train_models(df: pd.DataFrame, feature_cols: list):
 pipe_therapy, pipe_pro_risk = train_models(main_df, feature_cols)
 
 if pipe_therapy is None or pipe_pro_risk is None:
-    st.error("Models could not be fully trained. Please check label distributions in the data.")
+    st.error(
+        "Models could not be fully trained (one of the labels has only a single class). "
+        "Please check label distributions in the data."
+    )
     st.stop()
 
 
 # =========================================
-# 5. Manufacturability score and risk label
+# Manufacturability score & risk label
 # =========================================
 
 def manufacturability_score(row: pd.Series) -> float:
@@ -277,7 +276,7 @@ def risk_label_color(p: float):
 
 
 # =========================================
-# 6. Build AI candidates (grid search over design space)
+# Build AI candidate protocols
 # =========================================
 
 def build_candidates(
@@ -303,7 +302,7 @@ def build_candidates(
     for col in feature_cols:
         vals = df[col].dropna().value_counts().index[:5].tolist()
         if len(vals) == 0:
-            vals = [None]
+            vals = ["Missing"]
         design_space[col] = vals
 
     # Validity check for a candidate protocol
@@ -337,9 +336,10 @@ def build_candidates(
 
     grid_df = pd.DataFrame(rows)
 
-    # Coerce features to string as in training
+    # Match preprocessing used in training: fill NA and convert to string
     for col in feature_cols:
-        grid_df[col] = grid_df[col].astype(str)
+        if col in grid_df.columns:
+            grid_df[col] = grid_df[col].fillna("Missing").astype(str)
 
     # Predict P_therapy
     prep_t = get_prep_step_name(pipe_therapy)
@@ -381,13 +381,13 @@ candidates_df = build_candidates(main_df, feature_cols)
 
 if candidates_df.empty:
     st.warning(
-        "No AI candidates passed the pro-tumor risk filter. "
+        "No AI candidate protocols passed the pro-tumor risk filter. "
         "You may want to relax the risk threshold or check the data."
     )
 
 
 # =========================================
-# 7. Streamlit UI
+# Streamlit UI
 # =========================================
 
 st.title("MSC-EV AI Simulator for Breast Cancer")
@@ -397,7 +397,7 @@ st.markdown(
 This tool uses machine learning trained on your **MSC-EV breast cancer dataset** to:
 
 1. Predict **anti-tumor efficacy** and **pro-tumor/dormancy risk** for your in vitro / in vivo design  
-2. Compute a **Translation Index** that combines efficacy, safety, and manufacturability  
+2. Compute a **Translation Index** combining efficacy, safety, and manufacturability  
 3. If your design is **not recommended**, suggest an **AI-optimized protocol** from a realistic design space
 """
 )
@@ -437,12 +437,12 @@ run = st.button("Run AI simulation")
 default_values = {}
 for col in feature_cols:
     vals = main_df[col].dropna()
-    default_values[col] = vals.mode().iloc[0] if len(vals) > 0 else None
+    default_values[col] = vals.mode().iloc[0] if len(vals) > 0 else "Missing"
 
 
 if run:
     # =========================================
-    # 7.1 Build user protocol row
+    # Build user protocol row
     # =========================================
     row_user = {}
     for col in feature_cols:
@@ -459,12 +459,12 @@ if run:
 
     df_user = pd.DataFrame([row_user])
 
-    # Coerce to string as in training
+    # Match preprocessing: fill NA and convert to string
     for col in feature_cols:
-        df_user[col] = df_user[col].astype(str)
+        df_user[col] = df_user[col].fillna("Missing").astype(str)
 
     # =========================================
-    # 7.2 Predict for user design
+    # Predict for user design
     # =========================================
     try:
         prep_t = get_prep_step_name(pipe_therapy)
@@ -494,7 +494,7 @@ if run:
     rec_user = (p_pro_user < 0.02) and (p_th_user > 0.85)
 
     # =========================================
-    # 7.3 Display user protocol results
+    # Display user protocol results
     # =========================================
     st.subheader("1) Your design — AI prediction")
 
@@ -525,7 +525,7 @@ if run:
         )
 
         # =========================================
-        # 7.4 AI-suggested optimized protocol
+        # AI-suggested optimized protocol
         # =========================================
         st.subheader("2) AI-suggested protocol closest to your design")
 
@@ -560,9 +560,9 @@ if run:
 
             df_ai = pd.DataFrame([row_ai[feature_cols]])
 
-            # Ensure type consistency
+            # Match preprocessing
             for col in feature_cols:
-                df_ai[col] = df_ai[col].astype(str)
+                df_ai[col] = df_ai[col].fillna("Missing").astype(str)
 
             # Predict for AI protocol
             try:
