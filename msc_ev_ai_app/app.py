@@ -312,7 +312,7 @@ if run:
 
     # -----------------------------
     # Predict therapy probability
-    -----------------------------
+    # -----------------------------
     try:
         prep_t = get_prep_step_name(pipe_therapy)
         Xu_t = pipe_therapy.named_steps[prep_t].transform(df_user)
@@ -325,7 +325,7 @@ if run:
 
     # -----------------------------
     # Predict pro-tumor probability
-    -----------------------------
+    # -----------------------------
     try:
         prep_r = get_prep_step_name(pipe_pro_risk)
         Xu_r = pipe_pro_risk.named_steps[prep_r].transform(df_user)
@@ -380,16 +380,20 @@ if run:
         subset = candidates2.copy()
 
         sub1 = subset[subset["Cell_Line"] == cell_line]
-        if not sub1.empty: subset = sub1
+        if not sub1.empty:
+            subset = sub1
 
         sub2 = subset[subset["MSC_Source"] == msc_source]
-        if not sub2.empty: subset = sub2
+        if not sub2.empty:
+            subset = sub2
 
         sub3 = subset[subset["EV_Isolation_Method"] == iso_method]
-        if not sub3.empty: subset = sub3
+        if not sub3.empty:
+            subset = sub3
 
         sub4 = subset[subset["Dose_Band"] == dose_band]
-        if not sub4.empty: subset = sub4
+        if not sub4.empty:
+            subset = sub4
 
         if subset.empty:
             subset = candidates2.copy()
